@@ -1,0 +1,22 @@
+.env
+.idea/
+*.iml
+target/
+build/
+out/
+.DS_Store
+*.class
+*.log
+.settings/
+.classpath
+.project
+
+
+# Local Java installation and generated files
+**/jdk21/
+**/jdk-21.zip
+**/target_test-classes/
+
+# Local environment files
+.env.*
+!.env.example
