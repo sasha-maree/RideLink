@@ -1,0 +1,21 @@
+server:
+  port: ${PORT_ACCOUNT:8081}
+
+spring:
+  application:
+    name: account-service
+  data:
+    mongodb:
+      uri: ${MONGODB_URI_ACCOUNT:mongodb://localhost:27017/ridelink_account}
+
+jwt:
+  secret: ${JWT_SECRET:default-insecure-secret-for-local-dev-only}
+  service:
+    fare:
+      secret: ${FARE_PAYMENT_SERVICE_JWT_SECRET:RmFyZVBheW1lbnRTZXJ2aWNlU3VwZXJTZWNyZXRLZXk=}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
