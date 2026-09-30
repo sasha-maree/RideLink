@@ -1,0 +1,31 @@
+server:
+  port: ${PORT_FARE_PAYMENT:8084}
+
+spring:
+  application:
+    name: fare-payment-service
+  data:
+    mongodb:
+      uri: ${MONGODB_URI:mongodb://localhost:27017/ridelink_fare_payment}
+
+jwt:
+  secret: ${JWT_SECRET:default-insecure-secret-for-local-dev-only}
+  service:
+    ride:
+      secret: ${RIDE_SERVICE_JWT_SECRET:UmlkZVNlcnZpY2VTdXBlclNlY3JldEtleTIwMjQhQCMk}
+    fare:
+      secret: ${FARE_PAYMENT_SERVICE_JWT_SECRET:RmFyZVBheW1lbnRTZXJ2aWNlU3VwZXJTZWNyZXRLZXk=}
+
+ride:
+  service:
+    url: ${RIDE_SERVICE_URL:http://localhost:8083}
+
+account:
+  service:
+    url: ${ACCOUNT_SERVICE_URL:http://localhost:8081}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
