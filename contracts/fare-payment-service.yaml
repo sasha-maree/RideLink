@@ -1,0 +1,774 @@
+openapi: 3.0.3
+
+info:
+  title: RideLink – Fare & Payment Service API
+  description: |
+    The Fare & Payment Service handles fare estimation, final fare calculation,
+    simulated payment processing, and receipt generation.
+
+    Responsibilities:
+    - Fare estimation (before ride request)
+    - Final fare calculation for completed rides (reads ride details from Ride Management Service)
+    - Simulated payment recording (no real payment gateway)
+    - Receipt generation (enriched with passenger/driver names from Account Service)
+    - Receipt retrieval
+
+    **This file is the authoritative API contract. Implementation must conform to it.**
+
+    ### Fare Formula
+    ```
+    totalFare = baseFare + (actualDistanceKm × ratePerKm)
+    ```
+    Parameters are configurable – not hardcoded. Values are [TEAM DECISION REQUIRED] (OW-05).
+
+    ### Interservice Calls Made by This Service
+    - `GET /api/v1/rides/{rideId}` on Ride Management Service – to read ride details for fare calculation
+    - `GET /api/v1/accounts/{accountId}` on Account Service – to enrich receipts with passenger/driver names
+
+    See `docs/reference/03-service-boundaries.md` for full boundary definition.
+  version: "1.0.0"
+  contact:
+    name: RideLink – IT3130 Group Assignment
+
+servers:
+  - url: http://localhost:{port}/api/v1
+    description: Local development server
+    variables:
+      port:
+        default: "8084"
+        description: "[RESOLVED] – Port confirmed as 8084"
+
+tags:
+  - name: Fares
+    description: Fare estimation and calculation
+  - name: Payments
+    description: Simulated payment processing
+  - name: Receipts
+    description: Receipt generation and retrieval
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PATHS
+# ──────────────────────────────────────────────────────────────────────────────
+
+paths:
+
+  # ── FARES ────────────────────────────────────────────────────────────────────
+
+  /fares/estimate:
+    post:
+      operationId: estimateFare
+      tags: [Fares]
+      summary: Estimate the fare for a trip
+      description: |
+        Returns an estimated fare based on a provided distance.
+
+        **Requires authentication. Role must be PASSENGER.**
+
+        This is a client-facing estimate — it does not create any database record.
+        The estimate uses the same formula as the final fare calculation but with a simulated distance.
+
+        Formula: `totalFare = baseFare + (estimatedDistanceKm × ratePerKm)`
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FareEstimateRequest'
+            example:
+              estimatedDistanceKm: 12.5
+      responses:
+        "200":
+          description: Fare estimate returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FareEstimateResponse'
+              example:
+                timestamp: "2024-01-01T09:55:00Z"
+                status: 200
+                data:
+                  estimatedDistanceKm: 12.5
+                  baseFare: 30.00
+                  distanceFare: 55.00
+                  surcharge: 0.00
+                  estimatedTotal: 85.00
+                  currency: ZAR
+        "400":
+          description: Validation error – distance missing or invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /fares/calculate:
+    post:
+      operationId: calculateFare
+      tags: [Fares]
+      summary: Calculate the final fare for a completed ride (internal)
+      description: |
+        Calculates and persists the final fare for a completed ride.
+
+        **INTERNAL endpoint** — called by the Ride Management Service after a ride is COMPLETED,
+        or triggered by another mechanism ([TEAM DECISION REQUIRED] – OB-02/OW-04).
+
+        This endpoint:
+        1. Calls `GET /api/v1/rides/{rideId}` on the Ride Management Service to verify the ride is COMPLETED
+           and to read `actualDistanceKm` and `durationMinutes`.
+        2. Calculates the fare.
+        3. Persists the fare record.
+
+        Returns 409 if a fare already exists for the ride.
+
+        Requires a valid SERVICE JWT. Callers must not be regular PASSENGER/DRIVER accounts.
+        The token must have `type=SERVICE` and `service=RIDE_SERVICE` (OS-05).
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalculateFareRequest'
+            example:
+              rideId: "880e8400-e29b-41d4-a716-446655440003"
+              actualDistanceKm: 12.5
+              durationMinutes: 25
+      responses:
+        "200":
+          description: Fare calculated and stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FareResponse'
+              example:
+                timestamp: "2024-01-01T10:35:00Z"
+                status: 200
+                data:
+                  fareId: "990e8400-e29b-41d4-a716-446655440004"
+                  rideId: "880e8400-e29b-41d4-a716-446655440003"
+                  baseFare: 30.00
+                  distanceFare: 55.00
+                  surcharge: 0.00
+                  totalAmount: 85.00
+                  currency: ZAR
+                  calculatedAt: "2024-01-01T10:35:00Z"
+        "400":
+          description: Validation error or ride not found / not completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Ride not found in Ride Management Service
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: Fare already calculated for this ride
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                timestamp: "2024-01-01T10:35:00Z"
+                status: 409
+                error: FARE_ALREADY_CALCULATED
+                message: A fare has already been calculated for this ride.
+                path: /api/v1/fares/calculate
+                details: []
+
+  /fares/{rideId}:
+    get:
+      operationId: getFareByRideId
+      tags: [Fares]
+      summary: Get fare details for a ride
+      description: |
+        Returns the calculated fare for a completed ride.
+
+        **Requires authentication.**
+        - PASSENGER may view the fare for their own rides.
+        - DRIVER may view the fare for their assigned rides.
+        - ADMIN may view any fare.
+
+        Returns 404 if fare has not yet been calculated (ride may not be COMPLETED yet).
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: rideId
+          in: path
+          required: true
+          description: UUID of the ride
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Fare found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FareResponse'
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Forbidden – not authorized to view this fare
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Fare not found (ride may not be completed yet)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ── PAYMENTS ─────────────────────────────────────────────────────────────────
+
+  /payments:
+    post:
+      operationId: processPayment
+      tags: [Payments]
+      summary: Process a simulated payment for a completed ride
+      description: |
+        Initiates a simulated payment for a ride that has been completed and has a calculated fare.
+
+        **Requires authentication. Role must be PASSENGER.**
+
+        Business rules:
+        - Ride must have status COMPLETED.
+        - Fare must have been calculated before payment can be made.
+        - Only one payment is allowed per ride. A second payment attempt returns 409.
+        - Payment is **simulated** — no real payment gateway is used.
+        - A `FAILED` outcome is a valid simulated result to demonstrate negative scenarios.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcessPaymentRequest'
+            example:
+              rideId: "880e8400-e29b-41d4-a716-446655440003"
+              paymentMethod: CARD
+      responses:
+        "200":
+          description: Payment processed (success or simulated failure)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentResponse'
+              example:
+                timestamp: "2024-01-01T10:36:00Z"
+                status: 200
+                data:
+                  paymentId: "aa0e8400-e29b-41d4-a716-446655440005"
+                  rideId: "880e8400-e29b-41d4-a716-446655440003"
+                  fareId: "990e8400-e29b-41d4-a716-446655440004"
+                  amount: 85.00
+                  currency: ZAR
+                  paymentMethod: CARD
+                  paymentStatus: COMPLETED
+                  processedAt: "2024-01-01T10:36:00Z"
+        "400":
+          description: Validation error or ride not COMPLETED / no fare calculated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Forbidden – only the ride's passenger may pay
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Ride or fare not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: Payment already completed for this ride
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                timestamp: "2024-01-01T10:36:01Z"
+                status: 409
+                error: PAYMENT_ALREADY_COMPLETED
+                message: A payment has already been successfully processed for this ride.
+                path: /api/v1/payments
+                details: []
+        "422":
+          description: Simulated payment failure (negative scenario)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                timestamp: "2024-01-01T10:36:00Z"
+                status: 422
+                error: PAYMENT_FAILED
+                message: Simulated payment processing failed. Please try again.
+                path: /api/v1/payments
+                details: []
+
+  /payments/{paymentId}:
+    get:
+      operationId: getPaymentById
+      tags: [Payments]
+      summary: Get payment details by ID
+      description: |
+        Returns details of a specific payment record.
+
+        **Requires authentication.**
+        - PASSENGER may view their own payments.
+        - ADMIN may view any payment.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: paymentId
+          in: path
+          required: true
+          description: UUID of the payment
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Payment found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentResponse'
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Payment not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ── RECEIPTS ─────────────────────────────────────────────────────────────────
+
+  /receipts/{rideId}:
+    get:
+      operationId: getReceiptByRideId
+      tags: [Receipts]
+      summary: Get the receipt for a completed and paid ride
+      description: |
+        Returns the full receipt for a ride that has been completed and paid.
+
+        **Requires authentication.**
+        - PASSENGER may retrieve receipts for their own rides.
+        - DRIVER may retrieve receipts for rides they completed.
+        - ADMIN may retrieve any receipt.
+
+        This endpoint calls the Account Service to enrich the receipt with passenger
+        and driver names at the time of generation.
+
+        A name snapshot may be stored in the receipt record to preserve immutability
+        ([TEAM DECISION REQUIRED] – OD-C).
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: rideId
+          in: path
+          required: true
+          description: UUID of the ride
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Receipt found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReceiptResponse'
+              example:
+                timestamp: "2024-01-01T10:36:01Z"
+                status: 200
+                data:
+                  receiptId: "bb0e8400-e29b-41d4-a716-446655440006"
+                  rideId: "880e8400-e29b-41d4-a716-446655440003"
+                  passenger:
+                    accountId: "550e8400-e29b-41d4-a716-446655440000"
+                    firstName: Jane
+                    lastName: Doe
+                    email: jane.doe@example.com
+                  driver:
+                    accountId: "660e8400-e29b-41d4-a716-446655440001"
+                    firstName: John
+                    lastName: Smith
+                  pickupLocation: "123 Main Street, Cape Town"
+                  dropoffLocation: "456 Beach Road, Cape Town"
+                  actualDistanceKm: 12.5
+                  durationMinutes: 25
+                  fare:
+                    fareId: "990e8400-e29b-41d4-a716-446655440004"
+                    baseFare: 30.00
+                    distanceFare: 55.00
+                    surcharge: 0.00
+                    totalAmount: 85.00
+                    currency: ZAR
+                  payment:
+                    paymentId: "aa0e8400-e29b-41d4-a716-446655440005"
+                    paymentMethod: CARD
+                    paymentStatus: COMPLETED
+                    processedAt: "2024-01-01T10:36:00Z"
+                  issuedAt: "2024-01-01T10:36:01Z"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Forbidden – not the ride's passenger or assigned driver
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Receipt not found (ride may not be paid yet)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+# ──────────────────────────────────────────────────────────────────────────────
+# COMPONENTS
+# ──────────────────────────────────────────────────────────────────────────────
+
+components:
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT bearer token issued by the Account Service on login.
+        [RESOLVED] – Token type confirmed as JWT (OS-01).
+
+  schemas:
+
+    # ── ENUMERATIONS ──────────────────────────────────────────────────────────
+
+    PaymentMethod:
+      type: string
+      enum: [CARD, CASH, WALLET]
+      description: Simulated payment method
+
+    PaymentStatus:
+      type: string
+      enum: [PENDING, COMPLETED, FAILED]
+      description: Current status of a simulated payment
+
+    # ── REQUEST SCHEMAS ───────────────────────────────────────────────────────
+
+    FareEstimateRequest:
+      type: object
+      required: [estimatedDistanceKm]
+      properties:
+        estimatedDistanceKm:
+          type: number
+          format: double
+          minimum: 0.1
+          description: Simulated distance in kilometres used for the estimate
+
+    CalculateFareRequest:
+      type: object
+      required: [rideId, actualDistanceKm, durationMinutes]
+      properties:
+        rideId:
+          type: string
+          format: uuid
+          description: UUID of the completed ride
+        actualDistanceKm:
+          type: number
+          format: double
+          minimum: 0.1
+          description: Actual (simulated) distance in kilometres
+        durationMinutes:
+          type: integer
+          minimum: 1
+          description: Actual (simulated) duration in minutes
+
+    ProcessPaymentRequest:
+      type: object
+      required: [rideId, paymentMethod]
+      properties:
+        rideId:
+          type: string
+          format: uuid
+          description: UUID of the completed ride to pay for
+        paymentMethod:
+          $ref: '#/components/schemas/PaymentMethod'
+
+    # ── RESPONSE SCHEMAS ──────────────────────────────────────────────────────
+
+    FareEstimateData:
+      type: object
+      properties:
+        estimatedDistanceKm:
+          type: number
+          format: double
+        baseFare:
+          type: number
+          format: double
+        distanceFare:
+          type: number
+          format: double
+        surcharge:
+          type: number
+          format: double
+        estimatedTotal:
+          type: number
+          format: double
+        currency:
+          type: string
+          description: Simulated currency code (e.g., ZAR)
+
+    FareEstimateResponse:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: integer
+        data:
+          $ref: '#/components/schemas/FareEstimateData'
+
+    FareData:
+      type: object
+      properties:
+        fareId:
+          type: string
+          format: uuid
+        rideId:
+          type: string
+          format: uuid
+        baseFare:
+          type: number
+          format: double
+        distanceFare:
+          type: number
+          format: double
+        surcharge:
+          type: number
+          format: double
+        totalAmount:
+          type: number
+          format: double
+        currency:
+          type: string
+        calculatedAt:
+          type: string
+          format: date-time
+
+    FareResponse:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: integer
+        data:
+          $ref: '#/components/schemas/FareData'
+
+    PaymentData:
+      type: object
+      properties:
+        paymentId:
+          type: string
+          format: uuid
+        rideId:
+          type: string
+          format: uuid
+        fareId:
+          type: string
+          format: uuid
+        amount:
+          type: number
+          format: double
+        currency:
+          type: string
+        paymentMethod:
+          $ref: '#/components/schemas/PaymentMethod'
+        paymentStatus:
+          $ref: '#/components/schemas/PaymentStatus'
+        processedAt:
+          type: string
+          format: date-time
+
+    PaymentResponse:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: integer
+        data:
+          $ref: '#/components/schemas/PaymentData'
+
+    ReceiptPersonSummary:
+      type: object
+      description: Minimal account info snapshot embedded in the receipt
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        firstName:
+          type: string
+        lastName:
+          type: string
+        email:
+          type: string
+          format: email
+          nullable: true
+          description: Included for passenger, omitted for driver
+
+    ReceiptFareSummary:
+      type: object
+      properties:
+        fareId:
+          type: string
+          format: uuid
+        baseFare:
+          type: number
+          format: double
+        distanceFare:
+          type: number
+          format: double
+        surcharge:
+          type: number
+          format: double
+        totalAmount:
+          type: number
+          format: double
+        currency:
+          type: string
+
+    ReceiptPaymentSummary:
+      type: object
+      properties:
+        paymentId:
+          type: string
+          format: uuid
+        paymentMethod:
+          $ref: '#/components/schemas/PaymentMethod'
+        paymentStatus:
+          $ref: '#/components/schemas/PaymentStatus'
+        processedAt:
+          type: string
+          format: date-time
+
+    ReceiptData:
+      type: object
+      properties:
+        receiptId:
+          type: string
+          format: uuid
+        rideId:
+          type: string
+          format: uuid
+        passenger:
+          $ref: '#/components/schemas/ReceiptPersonSummary'
+        driver:
+          $ref: '#/components/schemas/ReceiptPersonSummary'
+        pickupLocation:
+          type: string
+        dropoffLocation:
+          type: string
+        actualDistanceKm:
+          type: number
+          format: double
+          nullable: true
+        durationMinutes:
+          type: integer
+          nullable: true
+        fare:
+          $ref: '#/components/schemas/ReceiptFareSummary'
+        payment:
+          $ref: '#/components/schemas/ReceiptPaymentSummary'
+        issuedAt:
+          type: string
+          format: date-time
+
+    ReceiptResponse:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: integer
+        data:
+          $ref: '#/components/schemas/ReceiptData'
+
+    # ── COMMON ERROR RESPONSE ─────────────────────────────────────────────────
+
+    ErrorResponse:
+      type: object
+      description: Standard error response – consistent across all RideLink services
+      required: [timestamp, status, error, message, path]
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: integer
+        error:
+          type: string
+        message:
+          type: string
+        path:
+          type: string
+        details:
+          type: array
+          items:
+            type: string
