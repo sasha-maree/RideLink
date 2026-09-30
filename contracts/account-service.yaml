@@ -1,0 +1,688 @@
+openapi: 3.0.3
+
+info:
+  title: RideLink – Account Service API
+  description: |
+    The Account Service is the identity and authentication authority for the RideLink platform.
+
+    It is responsible for:
+    - Passenger and driver account registration
+    - Login and JWT token issuance
+    - Profile management
+    - Account status management (ACTIVE, SUSPENDED, DEACTIVATED)
+    - Role-based identity (PASSENGER, DRIVER, ADMIN)
+
+    **This file is the authoritative API contract. Implementation must conform to it.**
+
+    See `docs/reference/03-service-boundaries.md` for the full service boundary definition.
+  version: "1.0.0"
+  contact:
+    name: RideLink – IT3130 Group Assignment
+
+servers:
+  - url: http://localhost:{port}/api/v1
+    description: Local development server
+    variables:
+      port:
+        default: "8081"
+        description: "[RESOLVED] – Port confirmed as 8081"
+
+tags:
+  - name: Authentication
+    description: Registration, login, and logout operations
+  - name: Accounts
+    description: Account and profile management operations
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PATHS
+# ──────────────────────────────────────────────────────────────────────────────
+
+paths:
+
+  # ── AUTHENTICATION ──────────────────────────────────────────────────────────
+
+  /auth/register:
+    post:
+      operationId: registerAccount
+      tags: [Authentication]
+      summary: Register a new account
+      description: |
+        Creates a new user account with role PASSENGER or DRIVER.
+
+        **Public endpoint — no authentication required.**
+
+        Business rules:
+        - Email must be unique across all accounts.
+        - Password is stored hashed. Plaintext password is never persisted.
+        - Role must be PASSENGER or DRIVER. ADMIN accounts are created by existing admins only.
+        - Account status is set to ACTIVE on successful registration.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+            example:
+              firstName: Jane
+              lastName: Doe
+              email: jane.doe@example.com
+              password: "SecurePassword123!"
+              phoneNumber: "+27821234567"
+              role: PASSENGER
+      responses:
+        "201":
+          description: Account created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountResponse'
+              example:
+                timestamp: "2024-01-01T10:00:00Z"
+                status: 201
+                data:
+                  accountId: "550e8400-e29b-41d4-a716-446655440000"
+                  firstName: Jane
+                  lastName: Doe
+                  email: jane.doe@example.com
+                  role: PASSENGER
+                  accountStatus: ACTIVE
+                  createdAt: "2024-01-01T10:00:00Z"
+        "400":
+          description: Validation error – missing or invalid fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                timestamp: "2024-01-01T10:00:00Z"
+                status: 400
+                error: VALIDATION_ERROR
+                message: One or more fields failed validation.
+                path: /api/v1/auth/register
+                details:
+                  - "email: must be a valid email address"
+                  - "password: must be at least 8 characters"
+        "409":
+          description: Email is already registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                timestamp: "2024-01-01T10:00:00Z"
+                status: 409
+                error: EMAIL_ALREADY_REGISTERED
+                message: An account with this email address already exists.
+                path: /api/v1/auth/register
+                details: []
+
+  /auth/login:
+    post:
+      operationId: login
+      tags: [Authentication]
+      summary: Login and receive an authentication token
+      description: |
+        Authenticates a user with email and password and returns a bearer token.
+
+        **Public endpoint — no authentication required.**
+
+        Business rules:
+        - Returns 401 for invalid credentials (wrong email or password).
+        - Returns 403 if the account is SUSPENDED or DEACTIVATED.
+        - The token contains the accountId and role as claims.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              email: jane.doe@example.com
+              password: "SecurePassword123!"
+      responses:
+        "200":
+          description: Login successful – token returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+              example:
+                timestamp: "2024-01-01T10:00:00Z"
+                status: 200
+                data:
+                  token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  tokenType: Bearer
+                  accountId: "550e8400-e29b-41d4-a716-446655440000"
+                  role: PASSENGER
+        "400":
+          description: Missing or malformed request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Invalid email or password
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                timestamp: "2024-01-01T10:00:00Z"
+                status: 401
+                error: INVALID_CREDENTIALS
+                message: The email or password is incorrect.
+                path: /api/v1/auth/login
+                details: []
+        "403":
+          description: Account is suspended or deactivated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                timestamp: "2024-01-01T10:00:00Z"
+                status: 403
+                error: ACCOUNT_NOT_ACTIVE
+                message: This account is suspended or deactivated.
+                path: /api/v1/auth/login
+                details: []
+
+  /auth/logout:
+    post:
+      operationId: logout
+      tags: [Authentication]
+      summary: Logout (invalidate token)
+      description: |
+        Invalidates the current authentication token.
+
+        **Requires authentication.**
+
+        Note: If stateless JWT is used, this endpoint is a no-op at the server level
+        unless a token blacklist is maintained. The team must decide this in OS-04.
+
+        [TEAM DECISION REQUIRED] – Token invalidation strategy (OS-04).
+      security:
+        - BearerAuth: []
+      responses:
+        "204":
+          description: Logout successful – no content
+        "401":
+          description: No valid token provided
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ── ACCOUNT MANAGEMENT ──────────────────────────────────────────────────────
+
+  /accounts/me:
+    get:
+      operationId: getMyAccount
+      tags: [Accounts]
+      summary: Get the authenticated user's own account
+      description: |
+        Returns the full profile of the currently authenticated user.
+
+        **Requires authentication. Any role.**
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Account returned successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountResponse'
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    patch:
+      operationId: updateMyAccount
+      tags: [Accounts]
+      summary: Update the authenticated user's own profile
+      description: |
+        Allows a user to update their own first name, last name, or phone number.
+
+        **Requires authentication. Any role.**
+
+        Email and role cannot be changed through this endpoint.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProfileRequest'
+            example:
+              firstName: Janet
+              lastName: Doe
+              phoneNumber: "+27829876543"
+      responses:
+        "200":
+          description: Profile updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountResponse'
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /accounts/{accountId}:
+    get:
+      operationId: getAccountById
+      tags: [Accounts]
+      summary: Get an account by ID (internal/admin)
+      description: |
+        Returns account details for a given accountId.
+
+        **INTERNAL endpoint** — called by other services (e.g., Fare & Payment Service
+        building a receipt) and by ADMIN users.
+
+        Requires authentication. Role must be ADMIN, or the caller must present
+        a valid service token (see OS-05 for internal auth mechanism — [TEAM DECISION REQUIRED]).
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          description: UUID of the account to retrieve
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Account found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountResponse'
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Forbidden – insufficient role
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Account not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /accounts:
+    get:
+      operationId: listAccounts
+      tags: [Accounts]
+      summary: List all accounts (admin only)
+      description: |
+        Returns a paginated list of all accounts.
+
+        **Requires authentication. Role must be ADMIN.**
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: role
+          in: query
+          required: false
+          description: Filter by role
+          schema:
+            $ref: '#/components/schemas/Role'
+        - name: status
+          in: query
+          required: false
+          description: Filter by account status
+          schema:
+            $ref: '#/components/schemas/AccountStatus'
+        - name: page
+          in: query
+          required: false
+          description: Page number (1-based)
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: size
+          in: query
+          required: false
+          description: Page size
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: List of accounts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountListResponse'
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Forbidden – ADMIN only
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /accounts/{accountId}/status:
+    patch:
+      operationId: updateAccountStatus
+      tags: [Accounts]
+      summary: Update account status (admin only)
+      description: |
+        Changes the status of an account to ACTIVE, SUSPENDED, or DEACTIVATED.
+
+        **Requires authentication. Role must be ADMIN.**
+
+        Business rules:
+        - A SUSPENDED or DEACTIVATED account cannot log in.
+        - An ADMIN cannot suspend their own account through this endpoint.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          description: UUID of the account to update
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAccountStatusRequest'
+            example:
+              status: SUSPENDED
+      responses:
+        "200":
+          description: Account status updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountResponse'
+        "400":
+          description: Invalid status value
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Forbidden – ADMIN only
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Account not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+# ──────────────────────────────────────────────────────────────────────────────
+# COMPONENTS
+# ──────────────────────────────────────────────────────────────────────────────
+
+components:
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT bearer token issued by the Account Service on login.
+        Include as: Authorization: Bearer <token>
+        [RESOLVED] – Token type confirmed as JWT (OS-01).
+
+  schemas:
+
+    # ── ENUMERATIONS ──────────────────────────────────────────────────────────
+
+    Role:
+      type: string
+      enum: [PASSENGER, DRIVER, ADMIN]
+      description: The role assigned to an account.
+
+    AccountStatus:
+      type: string
+      enum: [ACTIVE, SUSPENDED, DEACTIVATED]
+      description: The current status of an account.
+
+    # ── REQUEST SCHEMAS ───────────────────────────────────────────────────────
+
+    RegisterRequest:
+      type: object
+      required: [firstName, lastName, email, password, role]
+      properties:
+        firstName:
+          type: string
+          minLength: 1
+          maxLength: 50
+          pattern: '^[A-Za-z\s\-]+$'
+          description: First name – letters, spaces, and hyphens only
+        lastName:
+          type: string
+          minLength: 1
+          maxLength: 50
+          pattern: '^[A-Za-z\s\-]+$'
+          description: Last name – letters, spaces, and hyphens only
+        email:
+          type: string
+          format: email
+          maxLength: 255
+          description: Must be a valid email address and unique in the system
+        password:
+          type: string
+          minLength: 8
+          maxLength: 128
+          description: |
+            Plain-text password sent over HTTPS.
+            Must be at least 8 characters and contain at least one digit.
+            Never returned in responses. Stored hashed.
+        phoneNumber:
+          type: string
+          pattern: '^\+?[0-9\s\-]{7,20}$'
+          description: Optional phone number in international or local format
+        role:
+          $ref: '#/components/schemas/Role'
+          description: Role must be PASSENGER or DRIVER. ADMIN cannot self-register.
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          description: Registered email address
+        password:
+          type: string
+          minLength: 1
+          description: Account password
+
+    UpdateProfileRequest:
+      type: object
+      description: All fields are optional. Only provided fields are updated.
+      properties:
+        firstName:
+          type: string
+          minLength: 1
+          maxLength: 50
+          pattern: '^[A-Za-z\s\-]+$'
+        lastName:
+          type: string
+          minLength: 1
+          maxLength: 50
+          pattern: '^[A-Za-z\s\-]+$'
+        phoneNumber:
+          type: string
+          pattern: '^\+?[0-9\s\-]{7,20}$'
+
+    UpdateAccountStatusRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          $ref: '#/components/schemas/AccountStatus'
+
+    # ── RESPONSE SCHEMAS ──────────────────────────────────────────────────────
+
+    AccountData:
+      type: object
+      description: Account information returned in API responses. Never includes passwordHash.
+      properties:
+        accountId:
+          type: string
+          format: uuid
+          description: Stable, unique account identifier (UUID)
+        firstName:
+          type: string
+        lastName:
+          type: string
+        email:
+          type: string
+          format: email
+        phoneNumber:
+          type: string
+          nullable: true
+        role:
+          $ref: '#/components/schemas/Role'
+        accountStatus:
+          $ref: '#/components/schemas/AccountStatus'
+        createdAt:
+          type: string
+          format: date-time
+          description: ISO 8601 UTC timestamp of account creation
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: ISO 8601 UTC timestamp of last update
+
+    AccountResponse:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: integer
+        data:
+          $ref: '#/components/schemas/AccountData'
+
+    AccountListResponse:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: integer
+        data:
+          type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/AccountData'
+            total:
+              type: integer
+              description: Total number of matching accounts
+            page:
+              type: integer
+            size:
+              type: integer
+
+    LoginData:
+      type: object
+      properties:
+        token:
+          type: string
+          description: Bearer token to include in subsequent requests
+        tokenType:
+          type: string
+          enum: [Bearer]
+        accountId:
+          type: string
+          format: uuid
+        role:
+          $ref: '#/components/schemas/Role'
+
+    LoginResponse:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: integer
+        data:
+          $ref: '#/components/schemas/LoginData'
+
+    # ── COMMON ERROR RESPONSE ─────────────────────────────────────────────────
+
+    ErrorResponse:
+      type: object
+      description: |
+        Standard error response returned by all endpoints on failure.
+        Consistent across all four RideLink services.
+      required: [timestamp, status, error, message, path]
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: UTC timestamp of when the error occurred
+        status:
+          type: integer
+          description: HTTP status code
+        error:
+          type: string
+          description: Machine-readable error code (e.g., VALIDATION_ERROR, EMAIL_ALREADY_REGISTERED)
+        message:
+          type: string
+          description: Human-readable description of the error
+        path:
+          type: string
+          description: The request path that caused the error
+        details:
+          type: array
+          description: Optional list of field-level validation errors
+          items:
+            type: string
