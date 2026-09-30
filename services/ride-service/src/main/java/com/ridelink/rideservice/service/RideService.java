@@ -1,5 +1,15 @@
 package com.ridelink.rideservice.service;
 
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.UUID;
+
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
 import com.ridelink.rideservice.client.DriverVehicleClient;
 import com.ridelink.rideservice.dto.AvailableDriverSummary;
 import com.ridelink.rideservice.dto.CreateRideRequest;
@@ -12,15 +22,6 @@ import com.ridelink.rideservice.model.RideHistoryEntry;
 import com.ridelink.rideservice.model.RideStatus;
 import com.ridelink.rideservice.model.RideStatusAction;
 import com.ridelink.rideservice.repository.RideRepository;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Pageable;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
-
-import java.time.LocalDateTime;
-import java.util.List;
-import java.util.UUID;
 
 @Service
 public class RideService {
