@@ -1,0 +1,678 @@
+openapi: 3.0.3
+
+info:
+  title: RideLink – Ride Management Service API
+  description: |
+    The Ride Management Service orchestrates the entire ride lifecycle.
+    It is the single source of truth for ride status and history.
+
+    Responsibilities:
+    - Ride request creation
+    - Driver lookup and assignment (via Driver & Vehicle Service)
+    - Ride status lifecycle management
+    - Ride cancellation
+    - Exposing ride details to the Fare & Payment Service
+
+    **This file is the authoritative API contract. Implementation must conform to it.**
+
+    ### Ride Lifecycle (State Machine)
+
+    ```
+    [NEW] → REQUESTED → ASSIGNED → ACCEPTED → IN_PROGRESS → COMPLETED
+                      ↘              ↘             ↘
+                      CANCELLED    CANCELLED    CANCELLED
+    ```
+
+    Valid transitions:
+    | From        | To          | Triggered by    |
+    |-------------|-------------|-----------------|
+    | (new)       | REQUESTED   | System (on POST /rides) |
+    | REQUESTED   | ASSIGNED    | System (driver found)   |
+    | REQUESTED   | CANCELLED   | System (no driver) or PASSENGER |
+    | ASSIGNED    | ACCEPTED    | DRIVER          |
+    | ASSIGNED    | CANCELLED   | PASSENGER or DRIVER |
+    | ACCEPTED    | IN_PROGRESS | DRIVER          |
+    | ACCEPTED    | CANCELLED   | DRIVER (exceptional) |
+    | IN_PROGRESS | COMPLETED   | DRIVER          |
+
+    Any other transition is invalid and returns 409 INVALID_STATUS_TRANSITION.
+
+    See `docs/reference/06-business-workflows.md` for full workflow documentation.
+  version: "1.0.0"
+  contact:
+    name: RideLink – IT3130 Group Assignment
+
+servers:
+  - url: http://localhost:{port}/api/v1
+    description: Local development server
+    variables:
+      port:
+        default: "8083"
+        description: "[RESOLVED] – Port confirmed as 8083"
+
+tags:
+  - name: Rides
+    description: Ride lifecycle management operations
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PATHS
+# ──────────────────────────────────────────────────────────────────────────────
+
+paths:
+
+  /rides:
+    post:
+      operationId: requestRide
+      tags: [Rides]
+      summary: Request a new ride
+      description: |
+        Creates a new ride request for the authenticated passenger.
+
+        **Requires authentication. Role must be PASSENGER.**
+
+        Internal workflow on receipt of this request:
+        1. Create ride record with status REQUESTED.
+        2. Call Driver & Vehicle Service `GET /api/v1/drivers/available` to find available drivers.
+        3. If driver found: assign driver, update status to ASSIGNED, update driver to ON_TRIP.
+        4. If no driver found: return 503 NO_DRIVER_AVAILABLE.
+
+        Distance and duration are simulated values (no real GPS or routing required).
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRideRequest'
+            example:
+              pickupLocation: "123 Main Street, Cape Town"
+              dropoffLocation: "456 Beach Road, Cape Town"
+              estimatedDistanceKm: 12.5
+      responses:
+        "201":
+          description: Ride created and driver assigned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RideResponse'
+              example:
+                timestamp: "2024-01-01T10:00:01Z"
+                status: 201
+                data:
+                  rideId: "880e8400-e29b-41d4-a716-446655440003"
+                  passengerId: "550e8400-e29b-41d4-a716-446655440000"
+                  driverId: "660e8400-e29b-41d4-a716-446655440001"
+                  vehicleId: "770e8400-e29b-41d4-a716-446655440002"
+                  pickupLocation: "123 Main Street, Cape Town"
+                  dropoffLocation: "456 Beach Road, Cape Town"
+                  rideStatus: ASSIGNED
+                  estimatedDistanceKm: 12.5
+                  requestedAt: "2024-01-01T10:00:00Z"
+                  assignedAt: "2024-01-01T10:00:01Z"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Forbidden – PASSENGER role required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: No drivers currently available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                timestamp: "2024-01-01T10:00:01Z"
+                status: 503
+                error: NO_DRIVER_AVAILABLE
+                message: No drivers are currently available. Please try again later.
+                path: /api/v1/rides
+                details: []
+
+    get:
+      operationId: listRides
+      tags: [Rides]
+      summary: List rides
+      description: |
+        Returns rides for the authenticated user.
+
+        - PASSENGER sees their own rides only.
+        - DRIVER sees rides assigned to them only.
+        - ADMIN sees all rides.
+
+        **Requires authentication. Any role.**
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Filter by ride status
+          schema:
+            $ref: '#/components/schemas/RideStatus'
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: size
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: List of rides
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RideListResponse'
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /rides/{rideId}:
+    get:
+      operationId: getRideById
+      tags: [Rides]
+      summary: Get ride details by ID
+      description: |
+        Returns full ride details for a given rideId.
+
+        **EXTERNAL and INTERNAL endpoint.**
+
+        - PASSENGER may view their own rides.
+        - DRIVER may view rides they are assigned to.
+        - ADMIN may view any ride.
+        - Fare & Payment Service calls this endpoint internally to read ride details for fare calculation.
+          (Internal calls must use a SERVICE JWT with `type=SERVICE` and `service=FARE_PAYMENT_SERVICE` (OS-05)).
+
+        Requires authentication. Valid token must be provided.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RideIdParam'
+      responses:
+        "200":
+          description: Ride found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RideResponse'
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Forbidden – not authorized to view this ride
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Ride not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      operationId: cancelRide
+      tags: [Rides]
+      summary: Cancel a ride
+      description: |
+        Cancels a ride. Valid cancellation conditions:
+
+        - PASSENGER may cancel when status is REQUESTED or ASSIGNED.
+        - DRIVER may cancel when status is ACCEPTED (exceptional case).
+        - Cannot cancel a ride that is IN_PROGRESS or COMPLETED.
+
+        **Requires authentication. PASSENGER or DRIVER role.**
+
+        After cancellation:
+        - If a driver was assigned, the Ride Management Service calls
+          Driver & Vehicle Service to set the driver back to AVAILABLE.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RideIdParam'
+      responses:
+        "200":
+          description: Ride cancelled successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RideResponse'
+              example:
+                timestamp: "2024-01-01T10:03:00Z"
+                status: 200
+                data:
+                  rideId: "880e8400-e29b-41d4-a716-446655440003"
+                  rideStatus: CANCELLED
+                  cancelledAt: "2024-01-01T10:03:00Z"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not authorized to cancel this ride
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Ride not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: Ride cannot be cancelled at its current status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                timestamp: "2024-01-01T10:03:00Z"
+                status: 409
+                error: CANNOT_CANCEL_RIDE
+                message: A ride that is IN_PROGRESS or COMPLETED cannot be cancelled.
+                path: /api/v1/rides/880e8400-e29b-41d4-a716-446655440003
+                details: []
+
+  /rides/{rideId}/status:
+    patch:
+      operationId: updateRideStatus
+      tags: [Rides]
+      summary: Transition ride to a new status
+      description: |
+        Moves a ride through its lifecycle by applying an action.
+
+        **Requires authentication.**
+
+        | Action   | Allowed By   | From Status  | To Status    |
+        |----------|--------------|--------------|--------------|
+        | ACCEPT   | DRIVER       | ASSIGNED     | ACCEPTED     |
+        | START    | DRIVER       | ACCEPTED     | IN_PROGRESS  |
+        | COMPLETE | DRIVER       | IN_PROGRESS  | COMPLETED    |
+
+        Any other action or transition is invalid and returns 409.
+
+        On COMPLETE:
+        - The service records completedAt and final distanceKm / durationMinutes.
+        - It then calls the Fare & Payment Service to trigger fare calculation
+          ([TEAM DECISION REQUIRED] – OB-02 / OW-04).
+        - It also calls Driver & Vehicle Service to set driver back to AVAILABLE.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RideIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRideStatusRequest'
+            example:
+              action: ACCEPT
+      responses:
+        "200":
+          description: Ride status updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RideResponse'
+        "400":
+          description: Invalid or missing action field
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not the assigned driver for this ride, or wrong role
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Ride not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: Invalid status transition
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                timestamp: "2024-01-01T10:10:00Z"
+                status: 409
+                error: INVALID_STATUS_TRANSITION
+                message: "Cannot transition ride from IN_PROGRESS to ACCEPTED."
+                path: /api/v1/rides/880e8400-e29b-41d4-a716-446655440003/status
+                details: []
+
+  /rides/{rideId}/history:
+    get:
+      operationId: getRideHistory
+      tags: [Rides]
+      summary: Get status transition history for a ride
+      description: |
+        Returns the full audit log of status transitions for a given ride.
+
+        **Requires authentication.**
+        - PASSENGER may view history for their own rides.
+        - DRIVER may view history for their assigned rides.
+        - ADMIN may view any ride history.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RideIdParam'
+      responses:
+        "200":
+          description: Ride history returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RideHistoryResponse'
+              example:
+                timestamp: "2024-01-01T10:30:00Z"
+                status: 200
+                data:
+                  rideId: "880e8400-e29b-41d4-a716-446655440003"
+                  history:
+                    - fromStatus: null
+                      toStatus: REQUESTED
+                      changedAt: "2024-01-01T10:00:00Z"
+                    - fromStatus: REQUESTED
+                      toStatus: ASSIGNED
+                      changedAt: "2024-01-01T10:00:01Z"
+                    - fromStatus: ASSIGNED
+                      toStatus: ACCEPTED
+                      changedAt: "2024-01-01T10:05:00Z"
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Ride not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+# ──────────────────────────────────────────────────────────────────────────────
+# COMPONENTS
+# ──────────────────────────────────────────────────────────────────────────────
+
+components:
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT bearer token issued by the Account Service on login.
+        [RESOLVED] – Token type confirmed as JWT (OS-01).
+
+  parameters:
+    RideIdParam:
+      name: rideId
+      in: path
+      required: true
+      description: UUID of the ride
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+
+    # ── ENUMERATIONS ──────────────────────────────────────────────────────────
+
+    RideStatus:
+      type: string
+      enum: [REQUESTED, ASSIGNED, ACCEPTED, IN_PROGRESS, COMPLETED, CANCELLED]
+      description: Current status of a ride in the lifecycle
+
+    RideStatusAction:
+      type: string
+      enum: [ACCEPT, START, COMPLETE]
+      description: |
+        Action to apply to a ride.
+        - ACCEPT: ASSIGNED → ACCEPTED (DRIVER only)
+        - START: ACCEPTED → IN_PROGRESS (DRIVER only)
+        - COMPLETE: IN_PROGRESS → COMPLETED (DRIVER only)
+
+    # ── REQUEST SCHEMAS ───────────────────────────────────────────────────────
+
+    CreateRideRequest:
+      type: object
+      required: [pickupLocation, dropoffLocation]
+      properties:
+        pickupLocation:
+          type: string
+          minLength: 3
+          maxLength: 200
+          description: |
+            Pickup location as a descriptive string.
+            Simulated – no real GPS coordinates required.
+        dropoffLocation:
+          type: string
+          minLength: 3
+          maxLength: 200
+          description: |
+            Dropoff location as a descriptive string.
+            Must be different from pickupLocation.
+        estimatedDistanceKm:
+          type: number
+          format: double
+          minimum: 0.1
+          description: |
+            Optional simulated distance in kilometres.
+            Used as a hint for fare estimation. Actual distance may differ (simulated).
+
+    UpdateRideStatusRequest:
+      type: object
+      required: [action]
+      properties:
+        action:
+          $ref: '#/components/schemas/RideStatusAction'
+
+    # ── RESPONSE SCHEMAS ──────────────────────────────────────────────────────
+
+    RideData:
+      type: object
+      description: |
+        Full ride record. Contains only IDs referencing other services —
+        it does NOT contain passenger name, driver name, or vehicle make/model.
+        That data is obtained from the respective services when needed.
+      properties:
+        rideId:
+          type: string
+          format: uuid
+        passengerId:
+          type: string
+          format: uuid
+          description: accountId of the passenger (from Account Service)
+        driverId:
+          type: string
+          format: uuid
+          nullable: true
+          description: accountId of the assigned driver (from Account Service). Null until assigned.
+        vehicleId:
+          type: string
+          format: uuid
+          nullable: true
+          description: vehicleId of the assigned vehicle (from Driver & Vehicle Service). Null until assigned.
+        pickupLocation:
+          type: string
+        dropoffLocation:
+          type: string
+        rideStatus:
+          $ref: '#/components/schemas/RideStatus'
+        estimatedDistanceKm:
+          type: number
+          format: double
+          nullable: true
+        actualDistanceKm:
+          type: number
+          format: double
+          nullable: true
+          description: Set on COMPLETE. Simulated value.
+        durationMinutes:
+          type: integer
+          nullable: true
+          description: Set on COMPLETE. Simulated value.
+        requestedAt:
+          type: string
+          format: date-time
+          nullable: true
+        assignedAt:
+          type: string
+          format: date-time
+          nullable: true
+        acceptedAt:
+          type: string
+          format: date-time
+          nullable: true
+        startedAt:
+          type: string
+          format: date-time
+          nullable: true
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+        cancelledAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    RideResponse:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: integer
+        data:
+          $ref: '#/components/schemas/RideData'
+
+    RideListResponse:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: integer
+        data:
+          type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/RideData'
+            total:
+              type: integer
+            page:
+              type: integer
+            size:
+              type: integer
+
+    RideHistoryEntry:
+      type: object
+      properties:
+        fromStatus:
+          $ref: '#/components/schemas/RideStatus'
+          nullable: true
+        toStatus:
+          $ref: '#/components/schemas/RideStatus'
+        changedAt:
+          type: string
+          format: date-time
+
+    RideHistoryResponse:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: integer
+        data:
+          type: object
+          properties:
+            rideId:
+              type: string
+              format: uuid
+            history:
+              type: array
+              items:
+                $ref: '#/components/schemas/RideHistoryEntry'
+
+    # ── COMMON ERROR RESPONSE ─────────────────────────────────────────────────
+
+    ErrorResponse:
+      type: object
+      description: Standard error response – consistent across all RideLink services
+      required: [timestamp, status, error, message, path]
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: integer
+        error:
+          type: string
+        message:
+          type: string
+        path:
+          type: string
+        details:
+          type: array
+          items:
+            type: string
