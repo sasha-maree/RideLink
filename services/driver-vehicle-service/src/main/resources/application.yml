@@ -1,0 +1,18 @@
+server:
+  port: ${PORT_DRIVER_VEHICLE:8082}
+
+spring:
+  application:
+    name: driver-vehicle-service
+  data:
+    mongodb:
+      uri: ${MONGODB_URI_DRIVER_VEHICLE:mongodb://localhost:27017/ridelink_driver_vehicle}
+
+jwt:
+  secret: ${JWT_SECRET:default-insecure-secret-for-local-dev-only}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
