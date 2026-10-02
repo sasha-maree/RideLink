@@ -1,0 +1,57 @@
+# CI Pipeline – RideLink
+
+# [DECISION REQUIRED] – CI platform, language, and build tool must be decided before this file is completed.
+# This is a placeholder stub showing the intended CI structure.
+#
+# The CI pipeline must:
+#   1. Trigger on push to main and develop branches (or the agreed branching strategy).
+#   2. Build all four services.
+#   3. Run unit tests for all four services.
+#   4. Fail the build if any test fails.
+#
+# Intended structure (to be implemented in Phase 17):
+#
+# name: RideLink CI
+#
+# on:
+#   push:
+#     branches: [main, develop]
+#   pull_request:
+#     branches: [main, develop]
+#
+# jobs:
+#   account-service:
+#     runs-on: ubuntu-latest
+#     steps:
+#       - uses: actions/checkout@v3
+#       - name: Build Account Service
+#         run: [build command TBD]
+#       - name: Test Account Service
+#         run: [test command TBD]
+#
+#   driver-vehicle-service:
+#     runs-on: ubuntu-latest
+#     steps:
+#       - uses: actions/checkout@v3
+#       - name: Build Driver & Vehicle Service
+#         run: [build command TBD]
+#       - name: Test Driver & Vehicle Service
+#         run: [test command TBD]
+#
+#   ride-service:
+#     runs-on: ubuntu-latest
+#     steps:
+#       - uses: actions/checkout@v3
+#       - name: Build Ride Management Service
+#         run: [build command TBD]
+#       - name: Test Ride Management Service
+#         run: [test command TBD]
+#
+#   fare-payment-service:
+#     runs-on: ubuntu-latest
+#     steps:
+#       - uses: actions/checkout@v3
+#       - name: Build Fare & Payment Service
+#         run: [build command TBD]
+#       - name: Test Fare & Payment Service
+#         run: [test command TBD]
