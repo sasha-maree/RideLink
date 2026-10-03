@@ -1,57 +1,52 @@
-# CI Pipeline – RideLink
+name: RideLink CI
 
-# [DECISION REQUIRED] – CI platform, language, and build tool must be decided before this file is completed.
-# This is a placeholder stub showing the intended CI structure.
-#
-# The CI pipeline must:
-#   1. Trigger on push to main and develop branches (or the agreed branching strategy).
-#   2. Build all four services.
-#   3. Run unit tests for all four services.
-#   4. Fail the build if any test fails.
-#
-# Intended structure (to be implemented in Phase 17):
-#
-# name: RideLink CI
-#
-# on:
-#   push:
-#     branches: [main, develop]
-#   pull_request:
-#     branches: [main, develop]
-#
-# jobs:
-#   account-service:
-#     runs-on: ubuntu-latest
-#     steps:
-#       - uses: actions/checkout@v3
-#       - name: Build Account Service
-#         run: [build command TBD]
-#       - name: Test Account Service
-#         run: [test command TBD]
-#
-#   driver-vehicle-service:
-#     runs-on: ubuntu-latest
-#     steps:
-#       - uses: actions/checkout@v3
-#       - name: Build Driver & Vehicle Service
-#         run: [build command TBD]
-#       - name: Test Driver & Vehicle Service
-#         run: [test command TBD]
-#
-#   ride-service:
-#     runs-on: ubuntu-latest
-#     steps:
-#       - uses: actions/checkout@v3
-#       - name: Build Ride Management Service
-#         run: [build command TBD]
-#       - name: Test Ride Management Service
-#         run: [test command TBD]
-#
-#   fare-payment-service:
-#     runs-on: ubuntu-latest
-#     steps:
-#       - uses: actions/checkout@v3
-#       - name: Build Fare & Payment Service
-#         run: [build command TBD]
-#       - name: Test Fare & Payment Service
-#         run: [test command TBD]
+on:
+  push:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and test ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - account-service
+          - driver-vehicle-service
+          - ride-service
+          - fare-payment-service
+
+    services:
+      mongodb:
+        image: mongo:8.0
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ping:1})'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: services/${{ matrix.service }}/pom.xml
+
+      - name: Build and run tests
+        working-directory: services/${{ matrix.service }}
+        run: bash ./mvnw --batch-mode --no-transfer-progress clean verify
