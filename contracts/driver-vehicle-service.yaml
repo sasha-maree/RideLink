@@ -1,0 +1,861 @@
+openapi: 3.0.3
+
+info:
+  title: RideLink – Driver & Vehicle Service API
+  description: |
+    The Driver & Vehicle Service manages driver operational profiles, vehicle registrations,
+    and driver availability. It is the authoritative source for whether a driver is available
+    for assignment.
+
+    Responsibilities:
+    - Driver operational profile creation and management
+    - Vehicle registration and management
+    - Driver availability tracking (AVAILABLE, OFFLINE, ON_TRIP)
+    - Exposing available drivers to the Ride Management Service (internal API)
+
+    **This file is the authoritative API contract. Implementation must conform to it.**
+
+    See `docs/reference/03-service-boundaries.md` for the full service boundary definition.
+
+    ### Key design rule
+    This service stores only the `accountId` issued by the Account Service as the `driverId`.
+    It does NOT duplicate account credentials, email, or password data.
+    Driver identity information (name, email) is obtained from the Account Service via API when needed.
+  version: "1.0.0"
+  contact:
+    name: RideLink – IT3130 Group Assignment
+
+servers:
+  - url: http://localhost:{port}/api/v1
+    description: Local development server
+    variables:
+      port:
+        default: "8082"
+        description: "[RESOLVED] – Port confirmed as 8082"
+
+tags:
+  - name: Drivers
+    description: Driver profile and availability management
+  - name: Vehicles
+    description: Vehicle registration and management
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PATHS
+# ──────────────────────────────────────────────────────────────────────────────
+
+paths:
+
+  # ── DRIVER PROFILE ──────────────────────────────────────────────────────────
+
+  /drivers:
+    post:
+      operationId: createDriverProfile
+      tags: [Drivers]
+      summary: Create driver operational profile
+      description: |
+        Creates a driver profile for an authenticated user with role DRIVER.
+
+        Must be called after account registration in the Account Service.
+
+        **Requires authentication. Role must be DRIVER.**
+
+        Business rules:
+        - driverId is set to the authenticated user's accountId (from the token).
+        - A driver profile cannot be created if one already exists for this accountId.
+        - Driver starts with availabilityStatus OFFLINE.
+        - License number must be unique.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDriverProfileRequest'
+            example:
+              licenseNumber: "DL-2024-001234"
+      responses:
+        "201":
+          description: Driver profile created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverProfileResponse'
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Forbidden – account role is not DRIVER
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: Driver profile already exists for this account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    get:
+      operationId: listAllDrivers
+      tags: [Drivers]
+      summary: List all driver profiles (admin only)
+      description: |
+        Returns a paginated list of all driver profiles.
+
+        **Requires authentication. Role must be ADMIN.**
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: availability
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/AvailabilityStatus'
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: size
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: List of driver profiles
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverProfileListResponse'
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Forbidden – ADMIN only
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /drivers/me:
+    get:
+      operationId: getMyDriverProfile
+      tags: [Drivers]
+      summary: Get own driver profile
+      description: |
+        Returns the driver profile for the authenticated driver.
+
+        **Requires authentication. Role must be DRIVER.**
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Driver profile found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverProfileResponse'
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Forbidden – DRIVER role required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Driver profile not found (account exists but no driver profile created yet)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    patch:
+      operationId: updateMyDriverProfile
+      tags: [Drivers]
+      summary: Update own driver profile
+      description: |
+        Allows a driver to update their own profile information.
+
+        **Requires authentication. Role must be DRIVER.**
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateDriverProfileRequest'
+            example:
+              licenseNumber: "DL-2024-005678"
+      responses:
+        "200":
+          description: Driver profile updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverProfileResponse'
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Driver profile not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /drivers/me/availability:
+    patch:
+      operationId: setMyAvailability
+      tags: [Drivers]
+      summary: Set own availability status
+      description: |
+        Allows a driver to set their availability to AVAILABLE or OFFLINE.
+
+        **Requires authentication. Role must be DRIVER.**
+
+        Business rules:
+        - Drivers may only set AVAILABLE or OFFLINE through this endpoint.
+        - ON_TRIP is set exclusively by the Ride Management Service via `PATCH /drivers/{driverId}/availability`.
+        - A driver cannot set AVAILABLE if they have no active vehicle.
+        - A driver cannot change availability while status is ON_TRIP.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetAvailabilityRequest'
+            example:
+              availabilityStatus: AVAILABLE
+      responses:
+        "200":
+          description: Availability updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverProfileResponse'
+        "400":
+          description: Invalid status value or trying to set ON_TRIP directly
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: No active vehicle – cannot go AVAILABLE
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: Cannot change availability while ON_TRIP
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /drivers/available:
+    get:
+      operationId: getAvailableDrivers
+      tags: [Drivers]
+      summary: Get available drivers (internal – used by Ride Management Service)
+      description: |
+        Returns a list of drivers currently with availabilityStatus AVAILABLE.
+
+        **INTERNAL endpoint** – called by the Ride Management Service when processing a ride request.
+
+        Requires authentication. Caller must present a valid token
+        ([TEAM DECISION REQUIRED] – internal auth mechanism OS-05).
+
+        Returns an empty array (not 404) when no drivers are available.
+        The Ride Management Service handles the no-driver scenario.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of available drivers to return
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 20
+            default: 5
+      responses:
+        "200":
+          description: List of available drivers (may be empty)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailableDriverListResponse'
+              example:
+                timestamp: "2024-01-01T10:00:01Z"
+                status: 200
+                data:
+                  - driverId: "660e8400-e29b-41d4-a716-446655440001"
+                    vehicleId: "770e8400-e29b-41d4-a716-446655440002"
+                    rating: 4.7
+                    availabilityStatus: AVAILABLE
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /drivers/{driverId}:
+    get:
+      operationId: getDriverById
+      tags: [Drivers]
+      summary: Get a driver profile by ID (internal/admin)
+      description: |
+        Returns a driver profile for a given driverId.
+
+        **INTERNAL endpoint** – called by other services or ADMIN users.
+
+        Requires ADMIN role or valid service token ([TEAM DECISION REQUIRED] – OS-05).
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/DriverIdParam'
+      responses:
+        "200":
+          description: Driver profile found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverProfileResponse'
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Driver not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /drivers/{driverId}/availability:
+    patch:
+      operationId: updateDriverAvailability
+      tags: [Drivers]
+      summary: Update a driver's availability (internal – used by Ride Management Service)
+      description: |
+        Updates the availabilityStatus of a specific driver.
+
+        **INTERNAL endpoint** – called exclusively by the Ride Management Service to set
+        a driver's status to ON_TRIP (on assignment) or AVAILABLE (on ride completion/cancellation).
+
+        Requires a valid token. Callers must not be regular PASSENGER or DRIVER accounts
+        ([TEAM DECISION REQUIRED] – OS-05 internal auth).
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/DriverIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateDriverAvailabilityRequest'
+            example:
+              availabilityStatus: ON_TRIP
+      responses:
+        "200":
+          description: Availability updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverProfileResponse'
+        "400":
+          description: Invalid status value
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Driver not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ── VEHICLES ─────────────────────────────────────────────────────────────────
+
+  /vehicles:
+    post:
+      operationId: registerVehicle
+      tags: [Vehicles]
+      summary: Register a vehicle
+      description: |
+        Registers a new vehicle under the authenticated driver's profile.
+
+        **Requires authentication. Role must be DRIVER.**
+
+        Business rules:
+        - Vehicle is linked to the driver's driverId (= accountId).
+        - Plate number must be unique.
+        - A driver profile must exist before registering a vehicle.
+        - A driver may have multiple vehicles; only one is active at a time.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterVehicleRequest'
+            example:
+              make: Toyota
+              model: Corolla
+              year: 2022
+              plateNumber: "CA 123-456"
+              capacity: 4
+              color: White
+      responses:
+        "201":
+          description: Vehicle registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VehicleResponse'
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Forbidden – DRIVER role required or no driver profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: Plate number already registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /vehicles/me:
+    get:
+      operationId: getMyVehicles
+      tags: [Vehicles]
+      summary: List own vehicles
+      description: |
+        Returns all vehicles registered to the authenticated driver.
+
+        **Requires authentication. Role must be DRIVER.**
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: List of vehicles
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VehicleListResponse'
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /vehicles/{vehicleId}:
+    get:
+      operationId: getVehicleById
+      tags: [Vehicles]
+      summary: Get a vehicle by ID (internal/admin)
+      description: |
+        Returns vehicle details for a given vehicleId.
+
+        **INTERNAL endpoint** – called by other services or ADMIN users.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: vehicleId
+          in: path
+          required: true
+          description: UUID of the vehicle
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Vehicle found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VehicleResponse'
+        "401":
+          description: Unauthenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Vehicle not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+# ──────────────────────────────────────────────────────────────────────────────
+# COMPONENTS
+# ──────────────────────────────────────────────────────────────────────────────
+
+components:
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT bearer token issued by the Account Service on login.
+        Include as: Authorization: Bearer <token>
+        [RESOLVED] – Token type confirmed as JWT (OS-01).
+
+  parameters:
+    DriverIdParam:
+      name: driverId
+      in: path
+      required: true
+      description: UUID of the driver (= accountId from the Account Service)
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+
+    # ── ENUMERATIONS ──────────────────────────────────────────────────────────
+
+    AvailabilityStatus:
+      type: string
+      enum: [AVAILABLE, OFFLINE, ON_TRIP]
+      description: |
+        Current operational availability of a driver.
+        - AVAILABLE: ready to accept rides
+        - OFFLINE: not accepting rides
+        - ON_TRIP: currently assigned to an active ride (set by Ride Management Service only)
+
+    # ── REQUEST SCHEMAS ───────────────────────────────────────────────────────
+
+    CreateDriverProfileRequest:
+      type: object
+      required: [licenseNumber]
+      properties:
+        licenseNumber:
+          type: string
+          minLength: 3
+          maxLength: 50
+          description: Driver's license number – must be unique in the system
+
+    UpdateDriverProfileRequest:
+      type: object
+      description: All fields optional – only provided fields are updated
+      properties:
+        licenseNumber:
+          type: string
+          minLength: 3
+          maxLength: 50
+
+    SetAvailabilityRequest:
+      type: object
+      required: [availabilityStatus]
+      properties:
+        availabilityStatus:
+          type: string
+          enum: [AVAILABLE, OFFLINE]
+          description: Drivers may only set AVAILABLE or OFFLINE themselves. ON_TRIP is system-set.
+
+    UpdateDriverAvailabilityRequest:
+      type: object
+      required: [availabilityStatus]
+      properties:
+        availabilityStatus:
+          $ref: '#/components/schemas/AvailabilityStatus'
+          description: Called by Ride Management Service – can be any valid status
+
+    RegisterVehicleRequest:
+      type: object
+      required: [make, model, year, plateNumber, capacity]
+      properties:
+        make:
+          type: string
+          minLength: 1
+          maxLength: 50
+          description: Vehicle manufacturer (e.g., Toyota)
+        model:
+          type: string
+          minLength: 1
+          maxLength: 50
+          description: Vehicle model (e.g., Corolla)
+        year:
+          type: integer
+          minimum: 1990
+          maximum: 2030
+          description: Year of manufacture
+        plateNumber:
+          type: string
+          minLength: 2
+          maxLength: 20
+          description: Vehicle registration plate number – must be unique
+        capacity:
+          type: integer
+          minimum: 1
+          maximum: 8
+          description: Maximum number of passengers (excluding driver)
+        color:
+          type: string
+          maxLength: 30
+          description: Vehicle color (optional)
+
+    # ── RESPONSE SCHEMAS ──────────────────────────────────────────────────────
+
+    DriverProfileData:
+      type: object
+      properties:
+        driverId:
+          type: string
+          format: uuid
+          description: Same as accountId from the Account Service
+        licenseNumber:
+          type: string
+        rating:
+          type: number
+          format: double
+          nullable: true
+          minimum: 0
+          maximum: 5
+          description: Average driver rating. Null until at least one ride is completed.
+        availabilityStatus:
+          $ref: '#/components/schemas/AvailabilityStatus'
+        activeVehicleId:
+          type: string
+          format: uuid
+          nullable: true
+          description: ID of the currently active vehicle, if any
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    DriverProfileResponse:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: integer
+        data:
+          $ref: '#/components/schemas/DriverProfileData'
+
+    DriverProfileListResponse:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: integer
+        data:
+          type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/DriverProfileData'
+            total:
+              type: integer
+            page:
+              type: integer
+            size:
+              type: integer
+
+    AvailableDriverSummary:
+      type: object
+      description: Minimal driver data exposed to the Ride Management Service for assignment
+      properties:
+        driverId:
+          type: string
+          format: uuid
+        vehicleId:
+          type: string
+          format: uuid
+          nullable: true
+        rating:
+          type: number
+          format: double
+          nullable: true
+        availabilityStatus:
+          $ref: '#/components/schemas/AvailabilityStatus'
+
+    AvailableDriverListResponse:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: integer
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AvailableDriverSummary'
+
+    VehicleData:
+      type: object
+      properties:
+        vehicleId:
+          type: string
+          format: uuid
+        driverId:
+          type: string
+          format: uuid
+        make:
+          type: string
+        model:
+          type: string
+        year:
+          type: integer
+        plateNumber:
+          type: string
+        capacity:
+          type: integer
+        color:
+          type: string
+          nullable: true
+        isActive:
+          type: boolean
+          description: Whether this is the driver's currently active vehicle
+        createdAt:
+          type: string
+          format: date-time
+
+    VehicleResponse:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: integer
+        data:
+          $ref: '#/components/schemas/VehicleData'
+
+    VehicleListResponse:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: integer
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/VehicleData'
+
+    # ── COMMON ERROR RESPONSE ─────────────────────────────────────────────────
+
+    ErrorResponse:
+      type: object
+      description: Standard error response – consistent across all RideLink services
+      required: [timestamp, status, error, message, path]
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: integer
+        error:
+          type: string
+        message:
+          type: string
+        path:
+          type: string
+        details:
+          type: array
+          items:
+            type: string
